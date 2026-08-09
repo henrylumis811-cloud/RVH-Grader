@@ -1,0 +1,18 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+app/build/
+app/release/
+app/debug/
+
+# Keep the wrapper jar out of the repo (see README) — CI/Android Studio regenerate it.
+gradle/wrapper/gradle-wrapper.jar
