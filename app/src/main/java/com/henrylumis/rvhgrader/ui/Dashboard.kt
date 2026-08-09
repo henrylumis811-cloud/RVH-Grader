@@ -45,6 +45,13 @@ fun DashboardScreen(
         topBar = {
             Column {
                 TopAppBar(title = { Text("HENRY LUMIS MAINFRAME") })
+                Text(
+                    "In dedication to Hellen",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 6.dp)
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)

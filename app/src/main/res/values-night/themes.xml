@@ -1,0 +1,8 @@
+<resources>
+    <!-- Dark variant of the native pre-Compose theme (see values/themes.xml for details). -->
+    <style name="Theme.RVHGrader" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/dark_bg</item>
+        <item name="android:statusBarColor">@color/dark_bg</item>
+        <item name="android:navigationBarColor">@color/dark_bg</item>
+    </style>
+</resources>

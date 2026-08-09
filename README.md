@@ -2,6 +2,17 @@
 
 A native Android port of the R_V_H_Grader web app, built with Kotlin + Jetpack Compose.
 
+## Icon, theme & branding
+- **App icon**: a redesigned "RVH" mark — a single HUD-style ring with reticle tick marks and a
+  blocky RVH monogram, on a radial navy glow background, in the app's own cyan/teal palette
+  (`app/src/main/res/drawable/ic_launcher_foreground.xml` and `..._background.xml`).
+- **Light + dark mode**: `ui/Theme.kt` defines proper light and dark color schemes and follows
+  the device's system setting automatically via `isSystemInDarkTheme()` — it's not just one look
+  forced on everyone. The native pre-Compose window background/status bar (`values/themes.xml`
+  and `values-night/themes.xml`) match too, so there's no flash of the wrong color before Compose
+  paints the first frame.
+- The header now reads "In dedication to Hellen" as a small line under the main title.
+
 ## What's included
 - **Lower Primary / Upper Primary** mode toggle — same subject lists and layout as the original.
 - **Class-list photo scanning**: tap "INGEST PHOTO" to capture a whole handwritten class list —

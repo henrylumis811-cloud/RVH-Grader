@@ -1,3 +1,10 @@
 <resources>
-    <style name="Theme.RVHGrader" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Native pre-Compose theme, light variant. This only controls the very first frame
+         (window background / status bar) before AppTheme (Theme.kt) takes over inside
+         Compose — the actual light/dark color logic lives there. -->
+    <style name="Theme.RVHGrader" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/dark_bg</item>
+        <item name="android:statusBarColor">@color/dark_bg</item>
+        <item name="android:navigationBarColor">@color/dark_bg</item>
+    </style>
 </resources>

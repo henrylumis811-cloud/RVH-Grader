@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand_cyan">#00E5FF</color>
+    <color name="brand_teal">#00B8A9</color>
+    <color name="dark_bg">#060B14</color>
+    <color name="dark_surface">#0D1420</color>
+    <color name="dark_on_surface">#E8F1FA</color>
+    <color name="neon_red">#FF3366</color>
+</resources>

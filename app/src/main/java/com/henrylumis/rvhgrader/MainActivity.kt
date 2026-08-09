@@ -7,7 +7,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
@@ -19,6 +18,7 @@ import com.henrylumis.rvhgrader.ocr.ClassListParser
 import com.henrylumis.rvhgrader.ocr.PendingRow
 import com.henrylumis.rvhgrader.ocr.loadUprightBitmap
 import com.henrylumis.rvhgrader.ocr.recognizeText
+import com.henrylumis.rvhgrader.ui.AppTheme
 import com.henrylumis.rvhgrader.ui.DashboardScreen
 import com.henrylumis.rvhgrader.ui.PinGate
 import kotlinx.coroutines.launch
@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            AppTheme {
                 Surface {
                     RVHGraderApp()
                 }
