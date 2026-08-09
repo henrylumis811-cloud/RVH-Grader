@@ -1,6 +1,7 @@
 package com.henrylumis.rvhgrader.ui
 
 import android.graphics.Bitmap
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -18,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import com.henrylumis.rvhgrader.grading.GradingLogic
 import com.henrylumis.rvhgrader.model.StudentRecord
 import com.henrylumis.rvhgrader.model.SystemMode
+import com.henrylumis.rvhgrader.ocr.PendingRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,7 +35,11 @@ fun DashboardScreen(
     scanStatus: String?,
     lastCapturedImage: Bitmap?,
     onCommit: () -> Unit,
-    records: List<StudentRecord>
+    records: List<StudentRecord>,
+    reviewing: Boolean,
+    pendingRows: List<PendingRow>,
+    onCommitReview: () -> Unit,
+    onDiscardReview: () -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -65,6 +71,16 @@ fun DashboardScreen(
                     image = lastCapturedImage
                 )
             }
+            if (reviewing) {
+                item {
+                    ReviewPanel(
+                        mode = mode,
+                        rows = pendingRows,
+                        onCommit = onCommitReview,
+                        onDiscard = onDiscardReview
+                    )
+                }
+            }
             item {
                 InputFormCard(
                     mode = mode,
@@ -91,6 +107,90 @@ fun DashboardScreen(
                 itemsIndexed(records) { index, learner ->
                     StudentCard(position = index + 1, learner = learner, mode = mode)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewPanel(
+    mode: SystemMode,
+    rows: List<PendingRow>,
+    onCommit: () -> Unit,
+    onDiscard: () -> Unit
+) {
+    val subjects = GradingLogic.subjectsFor(mode)
+    Card {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("REVIEW & CORRECT — ${rows.size} ROW(S) DETECTED", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Check each row against the photo above. Fix any wrong name or score before " +
+                    "committing — flagged fields were guessed from handwriting and are worth a " +
+                    "second look. Uncheck a row to skip it.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(Modifier.height(12.dp))
+
+            rows.forEach { row ->
+                ReviewRowCard(row = row, subjects = subjects)
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = onDiscard, modifier = Modifier.weight(1f)) {
+                    Text("DISCARD")
+                }
+                Button(onClick = onCommit, modifier = Modifier.weight(1f)) {
+                    Text("COMMIT CHECKED ROWS")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewRowCard(row: PendingRow, subjects: List<String>) {
+    val borderColor = if (row.lowConfidence) MaterialTheme.colorScheme.error
+        else MaterialTheme.colorScheme.outlineVariant
+
+    OutlinedCard(border = BorderStroke(1.dp, borderColor)) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = row.included, onCheckedChange = { row.included = it })
+                OutlinedTextField(
+                    value = row.name,
+                    onValueChange = { row.name = it.uppercase() },
+                    label = { Text("LEARNER NAME") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            subjects.chunked(4).forEach { group ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    group.forEach { subject ->
+                        OutlinedTextField(
+                            value = row.scores[subject].orEmpty(),
+                            onValueChange = { newVal ->
+                                row.scores[subject] = newVal.filter { it.isDigit() }.take(3)
+                            },
+                            label = { Text(GradingLogic.subjectLabels[subject] ?: subject.uppercase(), style = MaterialTheme.typography.labelSmall) },
+                            isError = subject in row.flaggedFields,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    repeat(4 - group.size) { Spacer(Modifier.weight(1f)) }
+                }
+                Spacer(Modifier.height(6.dp))
             }
         }
     }

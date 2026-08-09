@@ -15,7 +15,8 @@ import androidx.core.content.FileProvider
 import com.henrylumis.rvhgrader.grading.GradingLogic
 import com.henrylumis.rvhgrader.model.StudentRecord
 import com.henrylumis.rvhgrader.model.SystemMode
-import com.henrylumis.rvhgrader.ocr.OcrFieldParser
+import com.henrylumis.rvhgrader.ocr.ClassListParser
+import com.henrylumis.rvhgrader.ocr.PendingRow
 import com.henrylumis.rvhgrader.ocr.loadUprightBitmap
 import com.henrylumis.rvhgrader.ocr.recognizeText
 import com.henrylumis.rvhgrader.ui.DashboardScreen
@@ -60,6 +61,12 @@ fun RVHGraderApp() {
     var lastCapturedImage by remember { mutableStateOf<Bitmap?>(null) }
     var pendingPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
+    // ---- Review & Correct state — a class-list photo produces one row per learner here,
+    //      nothing is added to the class list until the teacher checks it and hits commit. ----
+    var reviewing by remember { mutableStateOf(false) }
+    val pendingRows = remember { mutableStateListOf<PendingRow>() }
+    var nextRowId by remember { mutableStateOf(0) }
+
     val scope = rememberCoroutineScope()
 
     fun currentRecords() = if (mode == SystemMode.LOWER) lowerRecords else upperRecords
@@ -69,35 +76,62 @@ fun RVHGraderApp() {
         fieldValues.clear()
     }
 
+    fun discardReview() {
+        pendingRows.clear()
+        reviewing = false
+    }
+
     fun runOcrOnUri(uri: Uri) {
+        discardReview() // a new scan replaces any unreviewed batch from a previous photo
         scanning = true
         scanStatus = null
         scope.launch {
             try {
                 val bitmap = loadUprightBitmap(context, uri)
                 lastCapturedImage = bitmap
-                val text = recognizeText(bitmap)
-                val result = OcrFieldParser.parse(text, mode)
+                val visionText = recognizeText(bitmap)
+                val extractedRows = ClassListParser.extractRows(visionText, mode)
 
-                if (result.name != null && nameValue.isBlank()) {
-                    nameValue = result.name
-                }
-                result.scores.forEach { (field, value) ->
-                    if (fieldValues[field].isNullOrBlank()) {
-                        fieldValues[field] = value.toString()
-                    }
+                extractedRows.forEach { row ->
+                    pendingRows.add(
+                        PendingRow(
+                            id = nextRowId++,
+                            initialName = row.name,
+                            initialScores = row.scores,
+                            flaggedFields = row.flaggedFields,
+                            lowConfidence = row.lowConfidence
+                        )
+                    )
                 }
 
-                scanStatus = if (result.fieldsPopulated > 0) {
-                    "DATA INGESTED: ${result.fieldsPopulated} FIELD(S) POPULATED - VERIFY BELOW"
+                scanStatus = if (extractedRows.isNotEmpty()) {
+                    "${extractedRows.size} ROW(S) DETECTED — REVIEW BELOW BEFORE SAVING"
                 } else {
-                    "NO MATCHABLE DATA FOUND - ENTER MANUALLY"
+                    "NO ROWS DETECTED - ENTER MANUALLY"
                 }
+                reviewing = extractedRows.isNotEmpty()
             } catch (e: Exception) {
                 scanStatus = "SCAN FAILED - ENTER DATA MANUALLY"
             } finally {
                 scanning = false
             }
+        }
+    }
+
+    fun commitReviewedRows() {
+        var committed = 0
+        pendingRows.forEach { row ->
+            if (!row.included || row.name.isBlank()) return@forEach
+            currentRecords().add(GradingLogic.buildRecord(row.name, mode, row.scores))
+            committed++
+        }
+        currentRecords().sortByDescending { it.total }
+        pendingRows.clear()
+        reviewing = false
+        scanStatus = if (committed > 0) {
+            "$committed STUDENT(S) COMMITTED TO DATABASE"
+        } else {
+            "NO ROWS COMMITTED: check a name for at least one checked row."
         }
     }
 
@@ -124,6 +158,7 @@ fun RVHGraderApp() {
         onModeChange = { newMode ->
             mode = newMode
             resetForm()
+            discardReview() // subject columns differ between modes — avoid stale review data
         },
         fieldValues = fieldValues,
         nameValue = nameValue,
@@ -143,6 +178,10 @@ fun RVHGraderApp() {
                 resetForm()
             }
         },
-        records = currentRecords()
+        records = currentRecords(),
+        reviewing = reviewing,
+        pendingRows = pendingRows,
+        onCommitReview = { commitReviewedRows() },
+        onDiscardReview = { discardReview() }
     )
 }

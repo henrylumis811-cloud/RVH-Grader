@@ -4,10 +4,11 @@ A native Android port of the R_V_H_Grader web app, built with Kotlin + Jetpack C
 
 ## What's included
 - **Lower Primary / Upper Primary** mode toggle — same subject lists and layout as the original.
-- **Photo scanning**: tap "INGEST PHOTO" to launch the device camera, then on-device OCR
-  (Google ML Kit Text Recognition) auto-fills the learner name and subject marks it can
-  confidently match — same alias-matching logic as the original (e.g. "MATHEMATICS"/"MATH"/"MTC"
-  all map to the MTC field). Works fully offline, no CDN/Tesseract dependency.
+- **Class-list photo scanning**: tap "INGEST PHOTO" to capture a whole handwritten class list —
+  on-device OCR (Google ML Kit Text Recognition) splits it into one row per learner, matches marks
+  to the right subject column, and hands you an editable **Review & Correct** card to fix anything
+  before committing. Works fully offline, no CDN/Tesseract dependency. See "Scanning a class list"
+  below for details.
 - **Same grading rules**: aggregate scale (90+ = 1 ... below 35 = 9) and PLE-style division
   bands for Upper Primary, ported 1:1 from the JS.
 - **Live standings list**, sorted by total score, same as the original leaderboard cards.
@@ -55,12 +56,13 @@ app/src/main/java/com/henrylumis/rvhgrader/
 ├── model/Models.kt               # SystemMode, StudentRecord, SubjectScore
 ├── grading/GradingLogic.kt       # Aggregate/division rules, record building
 ├── ocr/
-│   ├── TextRecognizerHelper.kt   # ML Kit on-device OCR
+│   ├── TextRecognizerHelper.kt   # ML Kit on-device OCR (returns word-level bounding boxes)
 │   ├── ImageUtils.kt             # EXIF-aware image loading (keeps photos upright for OCR)
-│   └── OcrFieldParser.kt         # Subject alias matching + name extraction
+│   ├── ClassListParser.kt        # Row/column clustering — splits a class-list photo into per-learner rows
+│   └── PendingRow.kt             # Editable row state for the Review & Correct screen
 └── ui/
     ├── PinGate.kt                # Local PIN screen
-    └── Dashboard.kt              # Mode toggle, scanner card, form, standings list
+    └── Dashboard.kt              # Mode toggle, scanner card, review panel, form, standings list
 ```
 
 ## Possible next steps
@@ -68,16 +70,22 @@ app/src/main/java/com/henrylumis/rvhgrader/
 - Export standings to PDF/CSV to share with school administration.
 - Multi-class / multi-term support if you're tracking more than one class at a time.
 
-## ⚠️ Known gap: class-list photos with several students
-Earlier, on the web version, we established the real photos are **class lists — many students'
-names and marks in one handwritten table** — and built a "scan → review each detected row →
-correct mistakes → commit all" flow for that. This native rewrite's `OcrFieldParser.kt` is
-currently a straight port of the *older, single-student* logic (one photo → fills one form).
-It'll still work if you photograph one learner's sheet at a time, but it won't split a class-list
-photo into multiple rows yet. ML Kit actually makes this easier than Tesseract did — its result
-gives per-line bounding boxes for free (`visionText.textBlocks`), which is exactly what's needed
-to cluster the table into rows/columns. Say the word and I'll port that logic + the review screen
-over next.
+## Scanning a class list (many learners, one photo)
+Tap "⚡ INGEST PHOTO" and capture the whole handwritten class list in one shot. `ClassListParser.kt`
+clusters ML Kit's word-level results into table rows by vertical position, tries to line marks up
+under the right subject column (using the sheet's own header row if it can find one, otherwise
+left-to-right order), and applies a few handwriting-digit corrections (O→0, I/L→1, S→5, B→8, Z→2).
+
+None of that gets saved automatically — a **Review & Correct** card appears with one editable row
+per detected learner: name field, one box per subject, a checkbox to include/exclude the row, and
+a red outline on any row or field that was uncertain (missing a name, a corrected digit, or fewer
+marks than expected). Fix what's wrong, uncheck anything that's a false read, then
+**COMMIT CHECKED ROWS** grades and adds them all to the standings at once. A fresh scan replaces
+whatever was in the review card before, so you won't end up double-committing an old batch.
+
+Handwriting varies a lot school to school — if the row-clustering or digit corrections need
+tuning against real samples from your school, send me a couple of photos (or just describe what
+it's getting wrong) and I'll adjust `ClassListParser.kt`.
 
 ## Pushing to GitHub & building via CI
 ```bash
