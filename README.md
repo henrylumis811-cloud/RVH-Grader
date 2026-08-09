@@ -11,7 +11,10 @@ A native Android port of the R_V_H_Grader web app, built with Kotlin + Jetpack C
   forced on everyone. The native pre-Compose window background/status bar (`values/themes.xml`
   and `values-night/themes.xml`) match too, so there's no flash of the wrong color before Compose
   paints the first frame.
-- The header now reads "In dedication to Hellen" as a small line under the main title.
+- The header now reads "In dedication to Hellen" as a small line under the main title, and the
+  same dedication appears again as a styled header on the opening PIN screen — a ring badge
+  echoing the app icon, the mainframe title, a small divider ornament, then the dedication in
+  italic underneath (`ui/PinGate.kt`'s `BrandHeader`).
 
 ## What's included
 - **Lower Primary / Upper Primary** mode toggle — same subject lists and layout as the original.
