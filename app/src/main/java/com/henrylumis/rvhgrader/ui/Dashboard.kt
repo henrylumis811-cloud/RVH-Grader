@@ -9,6 +9,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -16,16 +19,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.henrylumis.rvhgrader.export.ExportFormat
 import com.henrylumis.rvhgrader.grading.GradingLogic
+import com.henrylumis.rvhgrader.model.SchoolClass
 import com.henrylumis.rvhgrader.model.StudentRecord
 import com.henrylumis.rvhgrader.model.SystemMode
+import com.henrylumis.rvhgrader.model.Term
 import com.henrylumis.rvhgrader.ocr.PendingRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
-    mode: SystemMode,
-    onModeChange: (SystemMode) -> Unit,
+    selectedClass: SchoolClass,
+    onClassChange: (SchoolClass) -> Unit,
+    selectedTerm: Term,
+    onTermChange: (Term) -> Unit,
     fieldValues: MutableMap<String, String>,
     nameValue: String,
     onNameChange: (String) -> Unit,
@@ -39,12 +47,29 @@ fun DashboardScreen(
     reviewing: Boolean,
     pendingRows: List<PendingRow>,
     onCommitReview: () -> Unit,
-    onDiscardReview: () -> Unit
+    onDiscardReview: () -> Unit,
+    onOpenMenu: () -> Unit,
+    onExportClassList: (ExportFormat) -> Unit
 ) {
+    val mode = selectedClass.mode
+    var showExportDialog by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             Column {
-                TopAppBar(title = { Text("HENRY LUMIS MAINFRAME") })
+                TopAppBar(
+                    title = { Text("HENRY LUMIS MAINFRAME") },
+                    navigationIcon = {
+                        IconButton(onClick = onOpenMenu) {
+                            Icon(Icons.Filled.Menu, contentDescription = "Menu")
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showExportDialog = true }) {
+                            Icon(Icons.Filled.Share, contentDescription = "Export class list")
+                        }
+                    }
+                )
                 Text(
                     "In dedication to Hellen",
                     style = MaterialTheme.typography.labelSmall,
@@ -56,12 +81,8 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    SegmentedButton("LOWER PRIMARY", mode == SystemMode.LOWER, Modifier.weight(1f)) {
-                        onModeChange(SystemMode.LOWER)
-                    }
-                    SegmentedButton("UPPER PRIMARY", mode == SystemMode.UPPER, Modifier.weight(1f)) {
-                        onModeChange(SystemMode.UPPER)
-                    }
+                    ClassDropdown(selectedClass, onClassChange, Modifier.weight(1f))
+                    TermDropdown(selectedTerm, onTermChange, Modifier.weight(1f))
                 }
             }
         }
@@ -99,7 +120,10 @@ fun DashboardScreen(
                 )
             }
             item {
-                Text("LIVE ANALYTICS STANDINGS", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "${selectedClass.displayName} — ${selectedTerm.displayName} STANDINGS",
+                    style = MaterialTheme.typography.titleSmall
+                )
             }
             if (records.isEmpty()) {
                 item {
@@ -114,6 +138,59 @@ fun DashboardScreen(
                 itemsIndexed(records) { index, learner ->
                     StudentCard(position = index + 1, learner = learner, mode = mode)
                 }
+            }
+        }
+    }
+
+    if (showExportDialog) {
+        ExportFormatDialog(
+            title = "Export ${selectedClass.displayName} — ${selectedTerm.displayName} class list",
+            onDismiss = { showExportDialog = false },
+            onConfirm = { format ->
+                showExportDialog = false
+                onExportClassList(format)
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ClassDropdown(selected: SchoolClass, onChange: (SchoolClass) -> Unit, modifier: Modifier = Modifier) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
+        OutlinedTextField(
+            value = selected.displayName,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("CLASS") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            SchoolClass.values().forEach { sc ->
+                DropdownMenuItem(text = { Text(sc.displayName) }, onClick = { onChange(sc); expanded = false })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TermDropdown(selected: Term, onChange: (Term) -> Unit, modifier: Modifier = Modifier) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }, modifier = modifier) {
+        OutlinedTextField(
+            value = selected.displayName,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("TERM") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor().fillMaxWidth()
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Term.values().forEach { t ->
+                DropdownMenuItem(text = { Text(t.displayName) }, onClick = { onChange(t); expanded = false })
             }
         }
     }
@@ -200,15 +277,6 @@ private fun ReviewRowCard(row: PendingRow, subjects: List<String>) {
                 Spacer(Modifier.height(6.dp))
             }
         }
-    }
-}
-
-@Composable
-private fun SegmentedButton(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    if (selected) {
-        Button(onClick = onClick, modifier = modifier) { Text(label, style = MaterialTheme.typography.labelSmall) }
-    } else {
-        OutlinedButton(onClick = onClick, modifier = modifier) { Text(label, style = MaterialTheme.typography.labelSmall) }
     }
 }
 
@@ -350,4 +418,3 @@ private fun StudentCard(position: Int, learner: StudentRecord, mode: SystemMode)
         }
     }
 }
-

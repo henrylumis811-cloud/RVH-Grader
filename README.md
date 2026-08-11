@@ -16,6 +16,47 @@ A native Android port of the R_V_H_Grader web app, built with Kotlin + Jetpack C
   echoing the app icon, the mainframe title, a small divider ornament, then the dedication in
   italic underneath (`ui/PinGate.kt`'s `BrandHeader`).
 
+## Big update: classes, terms, exports, history, custom grading & backup
+This turned into a proper school-management app rather than a single-class grading tool. What's
+new:
+
+**Classes & terms.** Instead of a Lower/Upper Primary toggle, pick a class — Primary One through
+Primary Seven — from the dashboard's dropdown. P1-P3 automatically use the Lower Primary
+computation (7 subjects, ungraded); P4-P7 use Upper Primary (4 subjects, aggregate + division).
+A separate Term dropdown (Term 1/2/3) sits next to it — every learner record is tagged with both,
+so the standings list, history, and exports are always scoped to whichever class+term you're
+looking at.
+
+**Menu.** Tap the hamburger icon (top-left) for a navigation drawer: Grading (the main dashboard),
+Student History, Grading Scale (settings), and Backup & Restore.
+
+**Export.** The share icon on the dashboard exports the *current* class+term's whole class list;
+from Student History, exporting a specific past record exports just that one learner's report.
+Either way you pick PDF (formatted, print-ready — the "professional report"), Excel (.xlsx), or
+CSV, then it hands off to Android's share sheet so you can save it, email it, or send it wherever.
+None of the three formats need an extra library — PDF uses Android's built-in `PdfDocument`, CSV
+is plain text, and Excel is a small hand-rolled `.xlsx` writer (`export/XlsxExporter.kt`) instead
+of pulling in Apache POI, which has a rough history on Android.
+
+**Student History.** A learner's name only needs to be typed/scanned once per class+term — after
+that, every record for them (across every class and term they've ever been graded in) shows up
+grouped by name, newest first, in the History screen. Tap a learner to expand their record list
+and export any single one from there.
+
+**Custom grading scale.** Settings lets you edit both tables that used to be hardcoded: which
+mark ranges map to which aggregate (1-9), and which aggregate-sum ranges map to which division
+(I-IV). Add/remove bands, save, or reset to the original defaults. New scores use whichever scale
+is currently saved; scores already recorded keep whatever was in effect when they were graded.
+
+**Backup & Restore.** Exports the entire gradebook — every learner, every class, every term —
+plus the custom grading scale into one JSON file you choose the save location for (so it can be
+moved to a new phone, backed up to Drive, etc.), and can restore from that same file later
+(with a confirmation before it replaces anything).
+
+**Records now persist automatically.** Everything auto-saves to the app's private storage after
+every change, so closing the app (or the phone restarting) no longer loses your data — Backup &
+Restore is for deliberate, portable copies on top of that, not the only thing keeping data alive.
+
 ## What's included
 - **Lower Primary / Upper Primary** mode toggle — same subject lists and layout as the original.
 - **Class-list photo scanning**: tap "INGEST PHOTO" to capture a whole handwritten class list —
@@ -66,17 +107,35 @@ If you ever change that dependency line, double-check you keep the `com.google.m
 ## Project structure
 ```
 app/src/main/java/com/henrylumis/rvhgrader/
-├── MainActivity.kt              # App entry point, wires state + camera + OCR together
-├── model/Models.kt               # SystemMode, StudentRecord, SubjectScore
-├── grading/GradingLogic.kt       # Aggregate/division rules, record building
+├── MainActivity.kt              # Entry point: navigation drawer, all state, persistence, exports
+├── model/
+│   ├── Models.kt                  # SystemMode, SchoolClass (P1-P7), Term, StudentRecord
+│   └── GradingScale.kt            # Editable aggregate/division bands
+├── grading/
+│   ├── GradingLogic.kt            # Subject lists, record building
+│   └── GradingScaleRepository.kt  # Persists the custom grading scale (SharedPreferences+JSON)
+├── data/
+│   ├── GradebookRepository.kt     # Auto-save/load all records (internal storage JSON)
+│   └── BackupManager.kt           # Manual backup/restore to a user-chosen file (SAF)
+├── export/
+│   ├── ExportManager.kt           # Orchestrates export + hands off to the share sheet
+│   ├── CsvExporter.kt
+│   ├── PdfExporter.kt             # Built on Android's own PdfDocument, no extra library
+│   └── XlsxExporter.kt            # Minimal hand-rolled .xlsx writer, no Apache POI
 ├── ocr/
-│   ├── TextRecognizerHelper.kt   # ML Kit on-device OCR (returns word-level bounding boxes)
-│   ├── ImageUtils.kt             # EXIF-aware image loading (keeps photos upright for OCR)
-│   ├── ClassListParser.kt        # Row/column clustering — splits a class-list photo into per-learner rows
-│   └── PendingRow.kt             # Editable row state for the Review & Correct screen
+│   ├── TextRecognizerHelper.kt    # ML Kit on-device OCR (returns word-level bounding boxes)
+│   ├── ImageUtils.kt              # EXIF-aware image loading (keeps photos upright for OCR)
+│   ├── ClassListParser.kt         # Row/column clustering — splits a class-list photo into per-learner rows
+│   └── PendingRow.kt              # Editable row state for the Review & Correct screen
 └── ui/
-    ├── PinGate.kt                # Local PIN screen
-    └── Dashboard.kt              # Mode toggle, scanner card, review panel, form, standings list
+    ├── Screen.kt                  # Drawer destinations
+    ├── PinGate.kt                 # Local PIN screen (stylish dedication header)
+    ├── Dashboard.kt               # Class/term dropdowns, scanner, review panel, form, standings
+    ├── HistoryScreen.kt           # Every learner's records across classes/terms
+    ├── SettingsScreen.kt          # Editable grading scale
+    ├── BackupScreen.kt            # Backup/restore UI
+    ├── ExportFormatDialog.kt      # Shared PDF/Excel/CSV picker
+    └── Theme.kt                   # Light/dark color schemes
 ```
 
 ## Possible next steps

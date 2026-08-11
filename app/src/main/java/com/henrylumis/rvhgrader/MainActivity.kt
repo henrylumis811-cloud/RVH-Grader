@@ -7,20 +7,38 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.henrylumis.rvhgrader.data.GradebookRepository
+import com.henrylumis.rvhgrader.export.ExportFormat
+import com.henrylumis.rvhgrader.export.ExportManager
 import com.henrylumis.rvhgrader.grading.GradingLogic
+import com.henrylumis.rvhgrader.grading.GradingScaleRepository
+import com.henrylumis.rvhgrader.model.SchoolClass
 import com.henrylumis.rvhgrader.model.StudentRecord
-import com.henrylumis.rvhgrader.model.SystemMode
+import com.henrylumis.rvhgrader.model.Term
 import com.henrylumis.rvhgrader.ocr.ClassListParser
 import com.henrylumis.rvhgrader.ocr.PendingRow
 import com.henrylumis.rvhgrader.ocr.loadUprightBitmap
 import com.henrylumis.rvhgrader.ocr.recognizeText
 import com.henrylumis.rvhgrader.ui.AppTheme
+import com.henrylumis.rvhgrader.ui.BackupScreen
 import com.henrylumis.rvhgrader.ui.DashboardScreen
+import com.henrylumis.rvhgrader.ui.HistoryScreen
 import com.henrylumis.rvhgrader.ui.PinGate
+import com.henrylumis.rvhgrader.ui.Screen
+import com.henrylumis.rvhgrader.ui.SettingsScreen
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -38,6 +56,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RVHGraderApp() {
     val context = LocalContext.current
@@ -48,10 +67,16 @@ fun RVHGraderApp() {
         return
     }
 
-    // ---- Grading state (mirrors lowerDatabase / upperDatabase in the original app) ----
-    var mode by remember { mutableStateOf(SystemMode.LOWER) }
-    val lowerRecords = remember { mutableStateListOf<StudentRecord>() }
-    val upperRecords = remember { mutableStateListOf<StudentRecord>() }
+    // ---- Persisted state: loaded once on unlock, auto-saved after every change ----
+    val allRecords = remember { mutableStateListOf<StudentRecord>().apply { addAll(GradebookRepository.load(context)) } }
+    var gradingScale by remember { mutableStateOf(GradingScaleRepository.load(context)) }
+
+    fun persistRecords() = GradebookRepository.save(context, allRecords)
+    fun persistScale() = GradingScaleRepository.save(context, gradingScale)
+
+    // ---- Class / term selection (replaces the old Lower/Upper toggle) ----
+    var selectedClass by remember { mutableStateOf(SchoolClass.P1) }
+    var selectedTerm by remember { mutableStateOf(Term.TERM1) }
 
     var nameValue by remember { mutableStateOf("") }
     val fieldValues = remember { mutableStateMapOf<String, String>() }
@@ -61,15 +86,17 @@ fun RVHGraderApp() {
     var lastCapturedImage by remember { mutableStateOf<Bitmap?>(null) }
     var pendingPhotoUri by remember { mutableStateOf<Uri?>(null) }
 
-    // ---- Review & Correct state — a class-list photo produces one row per learner here,
-    //      nothing is added to the class list until the teacher checks it and hits commit. ----
     var reviewing by remember { mutableStateOf(false) }
     val pendingRows = remember { mutableStateListOf<PendingRow>() }
     var nextRowId by remember { mutableStateOf(0) }
 
-    val scope = rememberCoroutineScope()
+    // ---- Navigation ----
+    var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val navScope = rememberCoroutineScope()
+    val ocrScope = rememberCoroutineScope()
 
-    fun currentRecords() = if (mode == SystemMode.LOWER) lowerRecords else upperRecords
+    fun currentRecords() = allRecords.filter { it.schoolClass == selectedClass && it.term == selectedTerm }
 
     fun resetForm() {
         nameValue = ""
@@ -82,15 +109,15 @@ fun RVHGraderApp() {
     }
 
     fun runOcrOnUri(uri: Uri) {
-        discardReview() // a new scan replaces any unreviewed batch from a previous photo
+        discardReview()
         scanning = true
         scanStatus = null
-        scope.launch {
+        ocrScope.launch {
             try {
                 val bitmap = loadUprightBitmap(context, uri)
                 lastCapturedImage = bitmap
                 val visionText = recognizeText(bitmap)
-                val extractedRows = ClassListParser.extractRows(visionText, mode)
+                val extractedRows = ClassListParser.extractRows(visionText, selectedClass.mode)
 
                 extractedRows.forEach { row ->
                     pendingRows.add(
@@ -122,12 +149,12 @@ fun RVHGraderApp() {
         var committed = 0
         pendingRows.forEach { row ->
             if (!row.included || row.name.isBlank()) return@forEach
-            currentRecords().add(GradingLogic.buildRecord(row.name, mode, row.scores))
+            allRecords.add(GradingLogic.buildRecord(row.name, selectedClass, selectedTerm, row.scores, gradingScale))
             committed++
         }
-        currentRecords().sortByDescending { it.total }
         pendingRows.clear()
         reviewing = false
+        if (committed > 0) persistRecords()
         scanStatus = if (committed > 0) {
             "$committed STUDENT(S) COMMITTED TO DATABASE"
         } else {
@@ -153,35 +180,137 @@ fun RVHGraderApp() {
         takePictureLauncher.launch(uri)
     }
 
-    DashboardScreen(
-        mode = mode,
-        onModeChange = { newMode ->
-            mode = newMode
-            resetForm()
-            discardReview() // subject columns differ between modes — avoid stale review data
-        },
-        fieldValues = fieldValues,
-        nameValue = nameValue,
-        onNameChange = { nameValue = it },
-        onFieldChange = { field, value -> fieldValues[field] = value },
-        onCapturePhoto = { launchCamera() },
-        scanning = scanning,
-        scanStatus = scanStatus,
-        lastCapturedImage = lastCapturedImage,
-        onCommit = {
-            if (nameValue.isBlank()) {
-                scanStatus = "PROCESSING ERROR: Student Name missing."
-            } else {
-                val record = GradingLogic.buildRecord(nameValue, mode, fieldValues)
-                currentRecords().add(record)
-                currentRecords().sortByDescending { it.total }
-                resetForm()
+    fun openMenu() {
+        navScope.launch { drawerState.open() }
+    }
+
+    fun goTo(screen: Screen) {
+        currentScreen = screen
+        navScope.launch { drawerState.close() }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("HENRY LUMIS", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "In dedication to Hellen",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                HorizontalDivider()
+                NavigationDrawerItem(
+                    label = { Text(Screen.DASHBOARD.label) },
+                    selected = currentScreen == Screen.DASHBOARD,
+                    icon = { Icon(Icons.Filled.Tune, contentDescription = null) },
+                    onClick = { goTo(Screen.DASHBOARD) },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                NavigationDrawerItem(
+                    label = { Text(Screen.HISTORY.label) },
+                    selected = currentScreen == Screen.HISTORY,
+                    icon = { Icon(Icons.Filled.History, contentDescription = null) },
+                    onClick = { goTo(Screen.HISTORY) },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                NavigationDrawerItem(
+                    label = { Text(Screen.SETTINGS.label) },
+                    selected = currentScreen == Screen.SETTINGS,
+                    icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                    onClick = { goTo(Screen.SETTINGS) },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                NavigationDrawerItem(
+                    label = { Text(Screen.BACKUP.label) },
+                    selected = currentScreen == Screen.BACKUP,
+                    icon = { Icon(Icons.Filled.Backup, contentDescription = null) },
+                    onClick = { goTo(Screen.BACKUP) },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
             }
-        },
-        records = currentRecords(),
-        reviewing = reviewing,
-        pendingRows = pendingRows,
-        onCommitReview = { commitReviewedRows() },
-        onDiscardReview = { discardReview() }
-    )
+        }
+    ) {
+        when (currentScreen) {
+            Screen.DASHBOARD -> DashboardScreen(
+                selectedClass = selectedClass,
+                onClassChange = { newClass ->
+                    selectedClass = newClass
+                    resetForm()
+                    discardReview()
+                },
+                selectedTerm = selectedTerm,
+                onTermChange = { newTerm ->
+                    selectedTerm = newTerm
+                    resetForm()
+                    discardReview()
+                },
+                fieldValues = fieldValues,
+                nameValue = nameValue,
+                onNameChange = { nameValue = it },
+                onFieldChange = { field, value -> fieldValues[field] = value },
+                onCapturePhoto = { launchCamera() },
+                scanning = scanning,
+                scanStatus = scanStatus,
+                lastCapturedImage = lastCapturedImage,
+                onCommit = {
+                    if (nameValue.isBlank()) {
+                        scanStatus = "PROCESSING ERROR: Student Name missing."
+                    } else {
+                        allRecords.add(
+                            GradingLogic.buildRecord(nameValue, selectedClass, selectedTerm, fieldValues, gradingScale)
+                        )
+                        persistRecords()
+                        resetForm()
+                    }
+                },
+                records = currentRecords(),
+                reviewing = reviewing,
+                pendingRows = pendingRows,
+                onCommitReview = { commitReviewedRows() },
+                onDiscardReview = { discardReview() },
+                onOpenMenu = { openMenu() },
+                onExportClassList = { format ->
+                    val file = ExportManager.exportClassList(
+                        context, currentRecords(), selectedClass.mode,
+                        selectedClass.displayName, selectedTerm.displayName, format
+                    )
+                    ExportManager.shareFile(context, file, format.mimeType)
+                }
+            )
+
+            Screen.HISTORY -> HistoryScreen(
+                records = allRecords,
+                onOpenMenu = { openMenu() },
+                onExportIndividual = { record, format ->
+                    val file = ExportManager.exportIndividual(context, record, format)
+                    ExportManager.shareFile(context, file, format.mimeType)
+                }
+            )
+
+            Screen.SETTINGS -> SettingsScreen(
+                scale = gradingScale,
+                onScaleChange = { newScale ->
+                    gradingScale = newScale
+                    persistScale()
+                },
+                onOpenMenu = { openMenu() }
+            )
+
+            Screen.BACKUP -> BackupScreen(
+                records = allRecords,
+                gradingScale = gradingScale,
+                onOpenMenu = { openMenu() },
+                onRestore = { payload ->
+                    allRecords.clear()
+                    allRecords.addAll(payload.records)
+                    gradingScale = payload.gradingScale
+                    persistRecords()
+                    persistScale()
+                }
+            )
+        }
+    }
 }

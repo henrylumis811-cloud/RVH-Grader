@@ -1,13 +1,20 @@
 package com.henrylumis.rvhgrader.grading
 
+import com.henrylumis.rvhgrader.model.GradingScale
+import com.henrylumis.rvhgrader.model.SchoolClass
 import com.henrylumis.rvhgrader.model.StudentRecord
 import com.henrylumis.rvhgrader.model.SubjectScore
 import com.henrylumis.rvhgrader.model.SystemMode
+import com.henrylumis.rvhgrader.model.Term
 
 /**
  * Direct port of the scoring rules from the original R_V_H_Grader web app:
- * - Lower Primary: 7 subjects, not graded (no aggregate / division).
- * - Upper Primary: 4 subjects, graded with PLE-style aggregate + division.
+ * - Lower Primary (P1-P3): 7 subjects, not graded (no aggregate / division).
+ * - Upper Primary (P4-P7): 4 subjects, graded with PLE-style aggregate + division.
+ *
+ * The actual aggregate/division thresholds now live in [GradingScale] (teacher-editable from
+ * Settings) instead of being hardcoded here — this object just knows the subject lists and how
+ * to assemble a [StudentRecord] from raw input using whichever scale is passed in.
  */
 object GradingLogic {
 
@@ -29,48 +36,18 @@ object GradingLogic {
     fun subjectsFor(mode: SystemMode): List<String> =
         if (mode == SystemMode.LOWER) lowerSubjects else upperSubjects
 
-    fun aggregateFor(score: Int): Int = when {
-        score >= 90 -> 1
-        score >= 80 -> 2
-        score >= 70 -> 3
-        score >= 60 -> 4
-        score >= 50 -> 5
-        score >= 45 -> 6
-        score >= 40 -> 7
-        score >= 35 -> 8
-        else -> 9
-    }
-
-    fun divisionFor(mode: SystemMode, aggSum: Int, grossSum: Int): String {
-        if (grossSum == 0) return "U"
-        return if (mode == SystemMode.LOWER) {
-            when {
-                aggSum <= 14 -> "I"
-                aggSum <= 28 -> "II"
-                aggSum <= 42 -> "III"
-                aggSum <= 56 -> "IV"
-                else -> "U"
-            }
-        } else {
-            when {
-                aggSum in 4..12 -> "I"
-                aggSum in 13..24 -> "II"
-                aggSum in 25..28 -> "III"
-                aggSum in 29..32 -> "IV"
-                else -> "U"
-            }
-        }
-    }
-
     /**
      * Builds a StudentRecord from raw text-field input, mirroring commitDataArray() in the
      * original app: clamps each mark to 0..100, sums totals, and only grades Upper Primary.
      */
     fun buildRecord(
         name: String,
-        mode: SystemMode,
-        rawValues: Map<String, String>
+        schoolClass: SchoolClass,
+        term: Term,
+        rawValues: Map<String, String>,
+        scale: GradingScale
     ): StudentRecord {
+        val mode = schoolClass.mode
         val subjects = subjectsFor(mode)
         val gradingApplies = mode != SystemMode.LOWER
 
@@ -81,16 +58,18 @@ object GradingLogic {
         for (subject in subjects) {
             val raw = rawValues[subject].orEmpty()
             val absoluteScore = raw.toIntOrNull()?.coerceIn(0, 100) ?: 0
-            val agg = if (gradingApplies) aggregateFor(absoluteScore) else null
+            val agg = if (gradingApplies) scale.aggregateFor(absoluteScore) else null
             marksheet[subject] = SubjectScore(absoluteScore, agg)
             runningTotal += absoluteScore
             if (gradingApplies && agg != null) runningAggSum += agg
         }
 
-        val division = if (gradingApplies) divisionFor(mode, runningAggSum, runningTotal) else null
+        val division = if (gradingApplies) scale.divisionFor(runningAggSum, runningTotal) else null
 
         return StudentRecord(
             name = name.trim().uppercase(),
+            schoolClass = schoolClass,
+            term = term,
             scores = marksheet,
             total = runningTotal,
             aggSum = if (gradingApplies) runningAggSum else null,
