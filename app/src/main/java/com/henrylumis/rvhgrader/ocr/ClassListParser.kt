@@ -14,13 +14,14 @@ data class ExtractedRow(
 
 /**
  * Splits a class-list photo (many learners, one row each, subject columns across) into one
- * [ExtractedRow] per learner. This is the multi-student equivalent of the old single-form
- * autofill — it ports the row-clustering / column-matching approach used in the web app's
- * Tesseract pipeline, rebuilt on top of ML Kit's word-level bounding boxes.
+ * [ExtractedRow] per learner. Rebuilt on top of ML Kit's word-level bounding boxes.
  *
- * Nothing here is auto-committed: the caller shows these as editable rows in a review screen
- * so a teacher can fix any misread name or mark (handwriting OCR is never going to be perfect —
- * that's what the review step is for).
+ * DESIGN PRINCIPLE: never silently drop a row just because OCR was imperfect. Handwriting OCR
+ * is never going to be clean, and the Review & Correct screen exists specifically so a teacher
+ * can fix a bad read — so the parser's job is to surface its best guess for every plausible row
+ * (flagged low-confidence when unsure), not to only surface rows it's fully confident about.
+ * A row only gets skipped if it's almost certainly not a learner row at all (e.g. a single lone
+ * token, most likely a page number).
  */
 object ClassListParser {
 
@@ -28,18 +29,17 @@ object ClassListParser {
     private class RowCluster(var cy: Float, val items: MutableList<Token>)
 
     private val subjectAliases = mapOf(
-        "liti" to listOf("LITERACY 1", "LITERACY I", "LIT 1", "LIT I", "LITI"),
+        "liti" to listOf("LITERACY 1", "LITERACY I", "LIT 1", "LIT I", "LITI", "LIT"),
         "writ" to listOf("WRITING", "WRIT"),
         "read" to listOf("READING", "READ"),
-        "sst" to listOf("S.S.T", "SST", "SOCIAL STUDIES"),
+        "sst" to listOf("S.S.T", "SST", "SOCIAL STUDIES", "SOCIAL"),
         "sci" to listOf("SCIENCE", "SCI"),
-        "mtc" to listOf("MATHEMATICS", "MATH", "MTC"),
+        "mtc" to listOf("MATHEMATICS", "MATH", "MTC", "MATHS"),
         "eng" to listOf("ENGLISH", "ENG"),
-        "re" to listOf("R.E", "RELIGIOUS EDUCATION", "R E", "RE"),
+        "re" to listOf("R.E", "RELIGIOUS EDUCATION", "R E", "RE", "REL"),
         "lug" to listOf("LUGANDA", "LUG")
     )
 
-    private val nameTokenRegex = Regex("^[A-Za-z.'-]{2,}$")
     private val stripCharsRegex = Regex("[|_~`]")
     private val aliasCleanupRegex = Regex("[^A-Z. ]")
     private val digitRunRegex = Regex("\\d{1,3}")
@@ -59,6 +59,20 @@ object ClassListParser {
             val extracted = parseRow(row, activeFieldIds, columnMap) ?: return@forEachIndexed
             results.add(extracted)
         }
+
+        // Last resort: OCR clearly read *something* (tokens isn't empty) but every row got
+        // filtered out above. Rather than surfacing nothing at all, show one row per detected
+        // line with its raw text as the name — fully editable, heavily flagged, but visible.
+        if (results.isEmpty()) {
+            rows.forEachIndexed { idx, row ->
+                if (idx == headerRowIndex || row.items.isEmpty()) return@forEachIndexed
+                val rawText = row.items.joinToString(" ") { it.text }.trim()
+                if (rawText.isNotEmpty()) {
+                    results.add(ExtractedRow(rawText.uppercase(), emptyMap(), emptySet(), lowConfidence = true))
+                }
+            }
+        }
+
         return results
     }
 
@@ -79,7 +93,9 @@ object ClassListParser {
 
     private fun clusterIntoRows(tokens: List<Token>): List<RowCluster> {
         val medianHeight = tokens.map { it.height }.sorted()[tokens.size / 2].coerceAtLeast(10)
-        val rowTolerance = medianHeight * 0.7f
+        // Generous tolerance — handheld photos are rarely perfectly level, and being too strict
+        // here just fragments one learner's row into several unusable half-rows.
+        val rowTolerance = medianHeight * 1.1f
 
         val rows = mutableListOf<RowCluster>()
         for (tok in tokens.sortedBy { it.cy }) {
@@ -114,23 +130,35 @@ object ClassListParser {
         activeFieldIds: List<String>,
         columnMap: List<Pair<String, Float>>?
     ): ExtractedRow? {
+        // A single lone token on its own row is most likely a page number, index number, or
+        // stray mark — not enough signal to be a learner row. Anything with 2+ tokens gets a
+        // real attempt, even if the parse below ends up mostly empty.
+        if (row.items.size < 2) return null
+
         val nameTokens = mutableListOf<String>()
         // value, x-position, was a letter->digit correction applied
         val numericTokens = mutableListOf<Triple<Int, Float, Boolean>>()
 
         for (tok in row.items) {
             val cleaned = tok.text.replace(stripCharsRegex, "")
-            if (nameTokenRegex.matches(cleaned)) {
-                nameTokens.add(cleaned)
+            if (cleaned.isEmpty()) continue
+
+            val letterCount = cleaned.count { it.isLetter() }
+            val digitCount = cleaned.count { it.isDigit() }
+
+            // Classify by which character type dominates the token, rather than demanding a
+            // perfect full match — a name word with one OCR-noise character should still read
+            // as a name, and a score with one stray letter should still read as a number.
+            if (letterCount >= digitCount && letterCount >= 1 && cleaned.length >= 2) {
+                nameTokens.add(cleaned.filter { it.isLetter() || it == '\'' || it == '-' })
             } else {
                 extractNumericValue(cleaned)?.let { (value, corrected) ->
                     numericTokens.add(Triple(value, tok.cx, corrected))
                 }
             }
         }
-        if (nameTokens.isEmpty() && numericTokens.size < 2) return null // stray page number etc.
 
-        val name = nameTokens.joinToString(" ").uppercase()
+        val name = nameTokens.joinToString(" ") { it.uppercase() }.trim()
         val scores = mutableMapOf<String, Int?>()
         val flagged = mutableSetOf<String>()
 
@@ -152,7 +180,7 @@ object ClassListParser {
             }
         }
 
-        val lowConfidence = nameTokens.isEmpty() || flagged.isNotEmpty() || scores.size < activeFieldIds.size
+        val lowConfidence = name.isEmpty() || flagged.isNotEmpty() || scores.size < activeFieldIds.size
         return ExtractedRow(name, scores, flagged, lowConfidence)
     }
 

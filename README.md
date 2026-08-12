@@ -156,6 +156,16 @@ marks than expected). Fix what's wrong, uncheck anything that's a false read, th
 **COMMIT CHECKED ROWS** grades and adds them all to the standings at once. A fresh scan replaces
 whatever was in the review card before, so you won't end up double-committing an old batch.
 
+**Design principle: never show nothing.** The parser classifies each OCR word by whichever
+character type dominates it (mostly letters -> name, mostly digits -> score) instead of requiring
+a perfect clean match — one noisy character in a word used to silently delete that whole word,
+and a row with too few clean words used to get dropped entirely, which made real handwritten
+photos come back with "NO ROWS DETECTED" far too often. Now a row only gets skipped outright if
+it's a single lone token (almost certainly a stray page/index number); everything else gets a
+best-effort attempt, and if literally nothing structured could be pulled out, it falls back to
+showing the raw OCR text per line as an editable, heavily-flagged row rather than showing nothing
+at all — worst case, it's still less retyping than starting from a blank form.
+
 Handwriting varies a lot school to school — if the row-clustering or digit corrections need
 tuning against real samples from your school, send me a couple of photos (or just describe what
 it's getting wrong) and I'll adjust `ClassListParser.kt`.
