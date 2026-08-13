@@ -48,9 +48,19 @@ object ClassListParser {
         val tokens = flattenToTokens(visionText)
         if (tokens.isEmpty()) return emptyList()
 
-        val rows = clusterIntoRows(tokens)
         val activeFieldIds = GradingLogic.subjectsFor(mode)
 
+        // Handheld photos are almost never perfectly level — even a few degrees of camera tilt
+        // means a row's rightmost column can land noticeably lower than its leftmost column,
+        // which silently breaks pure vertical-position row clustering (a learner's scores get
+        // grouped with the WRONG name). Estimate that tilt from the header row itself — the
+        // subject labels (ENG, MTC, ...) are always on one true row, so a straight line fit
+        // through wherever they actually landed tells us exactly how much the photo is skewed —
+        // then correct every token's y-position before clustering into rows.
+        val slope = estimateRowSlope(tokens, activeFieldIds)
+        val deskewedTokens = if (slope != 0f) tokens.map { it.copy(cy = it.cy - slope * it.cx) } else tokens
+
+        val rows = clusterIntoRows(deskewedTokens)
         val (columnMap, headerRowIndex) = detectHeaderColumns(rows, activeFieldIds)
 
         val results = mutableListOf<ExtractedRow>()
@@ -76,6 +86,38 @@ object ClassListParser {
         return results
     }
 
+    /**
+     * Fits a straight line (y = slope*x + intercept) through every token that matches a subject
+     * alias, wherever it landed in the raw (un-clustered) token list. Those tokens are always
+     * the header row in a real class list, so the slope of that line IS the photo's tilt.
+     * Returns 0 (no correction) if too few header-like tokens were found to trust the fit, or if
+     * the fitted slope is implausibly steep (more likely a false-positive alias match than a
+     * real header).
+     */
+    private fun estimateRowSlope(tokens: List<Token>, activeFieldIds: List<String>): Float {
+        val headerCandidates = tokens.filter { matchSubjectAlias(it.text, activeFieldIds) != null }
+        if (headerCandidates.size < 3) return 0f
+
+        val n = headerCandidates.size
+        val meanX = headerCandidates.sumOf { it.cx.toDouble() } / n
+        val meanY = headerCandidates.sumOf { it.cy.toDouble() } / n
+
+        var numerator = 0.0
+        var denominator = 0.0
+        headerCandidates.forEach { tok ->
+            val dx = tok.cx - meanX
+            val dy = tok.cy - meanY
+            numerator += dx * dy
+            denominator += dx * dx
+        }
+        if (denominator == 0.0) return 0f
+
+        val slope = (numerator / denominator).toFloat()
+        // A believable camera-tilt slope is well under 1 (45 degrees); anything wilder almost
+        // certainly means the "header" tokens found weren't really all on one line.
+        return if (abs(slope) < 0.5f) slope else 0f
+    }
+
     private fun flattenToTokens(visionText: Text): List<Token> {
         val tokens = mutableListOf<Token>()
         for (block in visionText.textBlocks) {
@@ -93,9 +135,10 @@ object ClassListParser {
 
     private fun clusterIntoRows(tokens: List<Token>): List<RowCluster> {
         val medianHeight = tokens.map { it.height }.sorted()[tokens.size / 2].coerceAtLeast(10)
-        // Generous tolerance — handheld photos are rarely perfectly level, and being too strict
-        // here just fragments one learner's row into several unusable half-rows.
-        val rowTolerance = medianHeight * 1.1f
+        // With tilt already corrected for (see estimateRowSlope), same-row tokens should now
+        // land at very similar y — a tighter tolerance here avoids merging two adjacent
+        // learners' rows into one, which would silently mix their scores together.
+        val rowTolerance = medianHeight * 0.65f
 
         val rows = mutableListOf<RowCluster>()
         for (tok in tokens.sortedBy { it.cy }) {

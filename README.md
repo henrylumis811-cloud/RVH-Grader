@@ -166,6 +166,14 @@ best-effort attempt, and if literally nothing structured could be pulled out, it
 showing the raw OCR text per line as an editable, heavily-flagged row rather than showing nothing
 at all — worst case, it's still less retyping than starting from a blank form.
 
+**Handles a tilted photo, not just a level one.** A handheld photo is almost never perfectly
+square-on to the paper — even a small camera tilt means the rightmost column of a row lands
+noticeably lower than the leftmost column, which used to make the parser match a learner's scores
+to the wrong name entirely. It now measures that tilt directly from the header row (since ENG,
+MTC, etc. are guaranteed to be on one real row, fitting a line through wherever they landed gives
+the exact skew angle) and corrects every word's position before grouping rows — this was the
+actual root cause behind "OCR isn't working" on a real photo, not just noisy handwriting.
+
 Handwriting varies a lot school to school — if the row-clustering or digit corrections need
 tuning against real samples from your school, send me a couple of photos (or just describe what
 it's getting wrong) and I'll adjust `ClassListParser.kt`.
