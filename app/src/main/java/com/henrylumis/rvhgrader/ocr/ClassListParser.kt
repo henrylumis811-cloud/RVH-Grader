@@ -14,14 +14,19 @@ data class ExtractedRow(
 
 /**
  * Splits a class-list photo (many learners, one row each, subject columns across) into one
- * [ExtractedRow] per learner. Rebuilt on top of ML Kit's word-level bounding boxes.
+ * [ExtractedRow] per learner, built on ML Kit's word-level bounding boxes.
  *
- * DESIGN PRINCIPLE: never silently drop a row just because OCR was imperfect. Handwriting OCR
- * is never going to be clean, and the Review & Correct screen exists specifically so a teacher
- * can fix a bad read — so the parser's job is to surface its best guess for every plausible row
- * (flagged low-confidence when unsure), not to only surface rows it's fully confident about.
- * A row only gets skipped if it's almost certainly not a learner row at all (e.g. a single lone
- * token, most likely a page number).
+ * STRATEGY: names are the anchor, not the whole row. A handheld photo is almost never level, and
+ * the further right a token sits, the more a small camera tilt shifts its y-position — so trying
+ * to cluster a WHOLE row (name + every score, spanning the sheet's full width) by raw vertical
+ * position is fragile: tilt alone can push one learner's scores closer to the NEXT row's name
+ * than their own. Names, by contrast, sit in a narrow column near the left edge, where tilt has
+ * far less room to do damage — so rows are built from name-like words first, then every number is
+ * matched to whichever name-row it's nearest to, with vertical tolerance that grows the further
+ * right the number sits (absorbing unknown tilt without needing a clean header to calibrate off).
+ *
+ * DESIGN PRINCIPLE: never silently drop a row just because OCR was imperfect — the Review &
+ * Correct screen exists specifically so a teacher can fix a bad read.
  */
 object ClassListParser {
 
@@ -44,78 +49,128 @@ object ClassListParser {
     private val aliasCleanupRegex = Regex("[^A-Z. ]")
     private val digitRunRegex = Regex("\\d{1,3}")
 
+    // How much extra vertical slack (as a fraction of horizontal distance from the name) to
+    // allow when matching a number to a name-row. 0.35 means: for every 100px a number sits to
+    // the right of the name it belongs to, allow up to 35px of extra vertical drift before
+    // ruling it out — generous enough for real camera tilt, without being unlimited.
+    private const val TILT_SLACK_PER_PX = 0.35f
+
     fun extractRows(visionText: Text, mode: SystemMode): List<ExtractedRow> {
         val tokens = flattenToTokens(visionText)
         if (tokens.isEmpty()) return emptyList()
 
         val activeFieldIds = GradingLogic.subjectsFor(mode)
+        val nameLikeTokens = tokens.filter { isNameLikeToken(it.text) }
+        val otherTokens = tokens.filter { !isNameLikeToken(it.text) }
 
-        // Handheld photos are almost never perfectly level — even a few degrees of camera tilt
-        // means a row's rightmost column can land noticeably lower than its leftmost column,
-        // which silently breaks pure vertical-position row clustering (a learner's scores get
-        // grouped with the WRONG name). Estimate that tilt from the header row itself — the
-        // subject labels (ENG, MTC, ...) are always on one true row, so a straight line fit
-        // through wherever they actually landed tells us exactly how much the photo is skewed —
-        // then correct every token's y-position before clustering into rows.
-        val slope = estimateRowSlope(tokens, activeFieldIds)
-        val deskewedTokens = if (slope != 0f) tokens.map { it.copy(cy = it.cy - slope * it.cx) } else tokens
-
-        val rows = clusterIntoRows(deskewedTokens)
-        val (columnMap, headerRowIndex) = detectHeaderColumns(rows, activeFieldIds)
-
-        val results = mutableListOf<ExtractedRow>()
-        rows.forEachIndexed { idx, row ->
-            if (idx == headerRowIndex) return@forEachIndexed
-            val extracted = parseRow(row, activeFieldIds, columnMap) ?: return@forEachIndexed
-            results.add(extracted)
+        if (nameLikeTokens.isEmpty()) {
+            // Nothing looked name-like at all — fall back to the old whole-row clustering as a
+            // last resort so a photo with unusual formatting still gets *some* attempt.
+            return extractRowsFallback(tokens, activeFieldIds)
         }
 
-        // Last resort: OCR clearly read *something* (tokens isn't empty) but every row got
-        // filtered out above. Rather than surfacing nothing at all, show one row per detected
-        // line with its raw text as the name — fully editable, heavily flagged, but visible.
-        if (results.isEmpty()) {
-            rows.forEachIndexed { idx, row ->
-                if (idx == headerRowIndex || row.items.isEmpty()) return@forEachIndexed
-                val rawText = row.items.joinToString(" ") { it.text }.trim()
-                if (rawText.isNotEmpty()) {
-                    results.add(ExtractedRow(rawText.uppercase(), emptyMap(), emptySet(), lowConfidence = true))
-                }
+        val nameRows = clusterIntoRows(nameLikeTokens, toleranceMultiplier = 0.85f)
+
+        // The header row (ENG, MTC, ...) is made of letters too, so it naturally becomes one of
+        // the "name rows" above — find and exclude it, and use its words to anchor column
+        // x-positions for score matching.
+        var headerIdx = -1
+        var columnMap: List<Pair<String, Float>>? = null
+        nameRows.forEachIndexed { idx, row ->
+            if (columnMap != null) return@forEachIndexed
+            val matches = row.items.mapNotNull { tok ->
+                matchSubjectAlias(tok.text, activeFieldIds)?.let { it to tok.cx }
+            }
+            if (matches.size >= 2) {
+                columnMap = matches
+                headerIdx = idx
             }
         }
 
+        val medianHeight = nameLikeTokens.map { it.height }.sorted()[nameLikeTokens.size / 2].coerceAtLeast(10)
+        val baseAllowance = medianHeight * 0.7f
+
+        // For each number, find the single nearest name-row (not just "any row within range") —
+        // this is what stops one learner's marks from bleeding into a neighboring row.
+        val numericByRow = HashMap<Int, MutableList<Triple<Int, Float, Boolean>>>()
+        otherTokens.forEach { tok ->
+            val numResult = extractNumericValue(tok.text.replace(stripCharsRegex, "")) ?: return@forEach
+            val (value, corrected) = numResult
+            var bestIdx = -1
+            var bestDy = Float.MAX_VALUE
+            nameRows.forEachIndexed { idx, row ->
+                if (idx == headerIdx) return@forEachIndexed
+                val rowAvgX = row.items.map { it.cx }.average().toFloat()
+                val dx = (tok.cx - rowAvgX).coerceAtLeast(0f)
+                val allowance = baseAllowance + dx * TILT_SLACK_PER_PX
+                val dy = abs(tok.cy - row.cy)
+                if (dy <= allowance && dy < bestDy) {
+                    bestDy = dy
+                    bestIdx = idx
+                }
+            }
+            if (bestIdx >= 0) {
+                numericByRow.getOrPut(bestIdx) { mutableListOf() }.add(Triple(value, tok.cx, corrected))
+            }
+        }
+
+        val results = mutableListOf<ExtractedRow>()
+        nameRows.forEachIndexed { idx, row ->
+            if (idx == headerIdx) return@forEachIndexed
+            val name = row.items.joinToString(" ") { cleanNameWord(it.text) }.trim().uppercase()
+            val numericTokens = numericByRow[idx].orEmpty()
+
+            val scores = mutableMapOf<String, Int?>()
+            val flagged = mutableSetOf<String>()
+            val cMap = columnMap
+            if (cMap != null) {
+                for ((value, x, corrected) in numericTokens) {
+                    val best = cMap.minByOrNull { abs(it.second - x) } ?: continue
+                    if (!scores.containsKey(best.first)) {
+                        scores[best.first] = value
+                        if (corrected) flagged.add(best.first)
+                    }
+                }
+            } else {
+                numericTokens.sortedBy { it.second }.forEachIndexed { i, (value, _, corrected) ->
+                    activeFieldIds.getOrNull(i)?.let { fieldId ->
+                        scores[fieldId] = value
+                        if (corrected) flagged.add(fieldId)
+                    }
+                }
+            }
+
+            if (name.isEmpty() && scores.isEmpty()) return@forEachIndexed
+            val lowConfidence = name.isEmpty() || flagged.isNotEmpty() || scores.size < activeFieldIds.size
+            results.add(ExtractedRow(name, scores, flagged, lowConfidence))
+        }
         return results
     }
 
-    /**
-     * Fits a straight line (y = slope*x + intercept) through every token that matches a subject
-     * alias, wherever it landed in the raw (un-clustered) token list. Those tokens are always
-     * the header row in a real class list, so the slope of that line IS the photo's tilt.
-     * Returns 0 (no correction) if too few header-like tokens were found to trust the fit, or if
-     * the fitted slope is implausibly steep (more likely a false-positive alias match than a
-     * real header).
-     */
-    private fun estimateRowSlope(tokens: List<Token>, activeFieldIds: List<String>): Float {
-        val headerCandidates = tokens.filter { matchSubjectAlias(it.text, activeFieldIds) != null }
-        if (headerCandidates.size < 3) return 0f
+    /** Letters clearly outnumber digits — used to decide whether a word belongs to the name. */
+    private fun isNameLikeToken(text: String): Boolean {
+        val cleaned = text.replace(stripCharsRegex, "")
+        if (cleaned.length < 2) return false
+        val letters = cleaned.count { it.isLetter() }
+        val digits = cleaned.count { it.isDigit() }
+        return letters > digits
+    }
 
-        val n = headerCandidates.size
-        val meanX = headerCandidates.sumOf { it.cx.toDouble() } / n
-        val meanY = headerCandidates.sumOf { it.cy.toDouble() } / n
+    private fun cleanNameWord(text: String): String =
+        text.replace(stripCharsRegex, "").filter { it.isLetter() || it == '\'' || it == '-' }
 
-        var numerator = 0.0
-        var denominator = 0.0
-        headerCandidates.forEach { tok ->
-            val dx = tok.cx - meanX
-            val dy = tok.cy - meanY
-            numerator += dx * dy
-            denominator += dx * dx
+    /** Whole-image whole-row clustering, used only if nothing looked name-like at all. */
+    private fun extractRowsFallback(tokens: List<Token>, activeFieldIds: List<String>): List<ExtractedRow> {
+        val rows = clusterIntoRows(tokens, toleranceMultiplier = 0.9f)
+        val results = mutableListOf<ExtractedRow>()
+        rows.forEach { row ->
+            if (row.items.size < 2) return@forEach
+            val rawText = row.items.joinToString(" ") { it.text }.trim()
+            if (rawText.isNotEmpty()) {
+                results.add(ExtractedRow(rawText.uppercase(), emptyMap(), emptySet(), lowConfidence = true))
+            }
         }
-        if (denominator == 0.0) return 0f
-
-        val slope = (numerator / denominator).toFloat()
-        // A believable camera-tilt slope is well under 1 (45 degrees); anything wilder almost
-        // certainly means the "header" tokens found weren't really all on one line.
-        return if (abs(slope) < 0.5f) slope else 0f
+        return results
     }
 
     private fun flattenToTokens(visionText: Text): List<Token> {
@@ -133,12 +188,9 @@ object ClassListParser {
         return tokens
     }
 
-    private fun clusterIntoRows(tokens: List<Token>): List<RowCluster> {
+    private fun clusterIntoRows(tokens: List<Token>, toleranceMultiplier: Float): List<RowCluster> {
         val medianHeight = tokens.map { it.height }.sorted()[tokens.size / 2].coerceAtLeast(10)
-        // With tilt already corrected for (see estimateRowSlope), same-row tokens should now
-        // land at very similar y — a tighter tolerance here avoids merging two adjacent
-        // learners' rows into one, which would silently mix their scores together.
-        val rowTolerance = medianHeight * 0.65f
+        val rowTolerance = medianHeight * toleranceMultiplier
 
         val rows = mutableListOf<RowCluster>()
         for (tok in tokens.sortedBy { it.cy }) {
@@ -152,79 +204,6 @@ object ClassListParser {
         }
         rows.forEach { row -> row.items.sortBy { it.cx } }
         return rows.sortedBy { it.cy }
-    }
-
-    /** Looks for a header row (2+ words matching subject aliases) to anchor column x-positions. */
-    private fun detectHeaderColumns(
-        rows: List<RowCluster>,
-        activeFieldIds: List<String>
-    ): Pair<List<Pair<String, Float>>?, Int> {
-        rows.forEachIndexed { idx, row ->
-            val matches = row.items.mapNotNull { tok ->
-                matchSubjectAlias(tok.text, activeFieldIds)?.let { it to tok.cx }
-            }
-            if (matches.size >= 2) return matches to idx
-        }
-        return null to -1
-    }
-
-    private fun parseRow(
-        row: RowCluster,
-        activeFieldIds: List<String>,
-        columnMap: List<Pair<String, Float>>?
-    ): ExtractedRow? {
-        // A single lone token on its own row is most likely a page number, index number, or
-        // stray mark — not enough signal to be a learner row. Anything with 2+ tokens gets a
-        // real attempt, even if the parse below ends up mostly empty.
-        if (row.items.size < 2) return null
-
-        val nameTokens = mutableListOf<String>()
-        // value, x-position, was a letter->digit correction applied
-        val numericTokens = mutableListOf<Triple<Int, Float, Boolean>>()
-
-        for (tok in row.items) {
-            val cleaned = tok.text.replace(stripCharsRegex, "")
-            if (cleaned.isEmpty()) continue
-
-            val letterCount = cleaned.count { it.isLetter() }
-            val digitCount = cleaned.count { it.isDigit() }
-
-            // Classify by which character type dominates the token, rather than demanding a
-            // perfect full match — a name word with one OCR-noise character should still read
-            // as a name, and a score with one stray letter should still read as a number.
-            if (letterCount >= digitCount && letterCount >= 1 && cleaned.length >= 2) {
-                nameTokens.add(cleaned.filter { it.isLetter() || it == '\'' || it == '-' })
-            } else {
-                extractNumericValue(cleaned)?.let { (value, corrected) ->
-                    numericTokens.add(Triple(value, tok.cx, corrected))
-                }
-            }
-        }
-
-        val name = nameTokens.joinToString(" ") { it.uppercase() }.trim()
-        val scores = mutableMapOf<String, Int?>()
-        val flagged = mutableSetOf<String>()
-
-        if (columnMap != null) {
-            for ((value, x, corrected) in numericTokens) {
-                val best = columnMap.minByOrNull { abs(it.second - x) } ?: continue
-                if (!scores.containsKey(best.first)) {
-                    scores[best.first] = value
-                    if (corrected) flagged.add(best.first)
-                }
-            }
-        } else {
-            val sortedNums = numericTokens.sortedBy { it.second }
-            activeFieldIds.forEachIndexed { i, fieldId ->
-                sortedNums.getOrNull(i)?.let { (value, _, corrected) ->
-                    scores[fieldId] = value
-                    if (corrected) flagged.add(fieldId)
-                }
-            }
-        }
-
-        val lowConfidence = name.isEmpty() || flagged.isNotEmpty() || scores.size < activeFieldIds.size
-        return ExtractedRow(name, scores, flagged, lowConfidence)
     }
 
     private fun matchSubjectAlias(token: String, activeFieldIds: List<String>): String? {

@@ -166,13 +166,16 @@ best-effort attempt, and if literally nothing structured could be pulled out, it
 showing the raw OCR text per line as an editable, heavily-flagged row rather than showing nothing
 at all — worst case, it's still less retyping than starting from a blank form.
 
-**Handles a tilted photo, not just a level one.** A handheld photo is almost never perfectly
-square-on to the paper — even a small camera tilt means the rightmost column of a row lands
-noticeably lower than the leftmost column, which used to make the parser match a learner's scores
-to the wrong name entirely. It now measures that tilt directly from the header row (since ENG,
-MTC, etc. are guaranteed to be on one real row, fitting a line through wherever they landed gives
-the exact skew angle) and corrects every word's position before grouping rows — this was the
-actual root cause behind "OCR isn't working" on a real photo, not just noisy handwriting.
+**Names anchor the rows, numbers get matched to the nearest one.** The previous approach tried
+clustering a whole row at once (name + every score, spanning the sheet's full width) by raw
+vertical position, then attempted to correct for tilt by calibrating off the header — but on a
+photo with no clean header, or where handwriting itself isn't perfectly level, that fell apart:
+scores would end up matched to the wrong learner, or a name would get split across two rows,
+coming out as fragments instead of full names. The row detection is now name-first: names sit in
+a narrow column near the left edge where tilt has far less room to cause damage, so rows are built
+from name-like words alone, then every number is matched to whichever name-row it's nearest to —
+with vertical tolerance that grows the further right the number sits, absorbing unknown tilt
+without needing a header to calibrate against at all.
 
 Handwriting varies a lot school to school — if the row-clustering or digit corrections need
 tuning against real samples from your school, send me a couple of photos (or just describe what
