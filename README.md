@@ -177,6 +177,19 @@ from name-like words alone, then every number is matched to whichever name-row i
 with vertical tolerance that grows the further right the number sits, absorbing unknown tilt
 without needing a header to calibrate against at all.
 
+**Never drop a number — a wrong guess beats a missing one.** That first version of the name-first
+approach still had a rejection threshold: a number too far from any row got discarded outright,
+which looks identical to OCR simply failing. A real test against an actual class-list photo (four
+subjects, clean handwriting) showed almost every score field coming back empty despite the numbers
+being perfectly legible — the threshold was silently eating them. Numbers are now always assigned
+to whichever row is the *closest* match, full stop, no rejection at all; worst case a value lands
+in the wrong row, which is obvious to spot and fix in the review screen, rather than vanishing
+without a trace. Column matching within a row got the same treatment: when the number of scores
+found matches the number of header columns exactly, they're paired left-to-right by order instead
+of by nearest on-screen distance — hand-ruled tables rarely have a header word sitting perfectly
+above its own column, so distance matching could make two numbers both look "nearest" to the same
+subject and silently lose one of them.
+
 Handwriting varies a lot school to school — if the row-clustering or digit corrections need
 tuning against real samples from your school, send me a couple of photos (or just describe what
 it's getting wrong) and I'll adjust `ClassListParser.kt`.

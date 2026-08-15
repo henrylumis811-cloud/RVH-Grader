@@ -87,25 +87,27 @@ object ClassListParser {
             }
         }
 
-        val medianHeight = nameLikeTokens.map { it.height }.sorted()[nameLikeTokens.size / 2].coerceAtLeast(10)
-        val baseAllowance = medianHeight * 0.7f
-
-        // For each number, find the single nearest name-row (not just "any row within range") —
-        // this is what stops one learner's marks from bleeding into a neighboring row.
+        // For each number, find the nearest name-row and assign it there — with NO rejection
+        // threshold. A hard cutoff here was silently DROPPING numbers that didn't look "close
+        // enough," which is a much worse outcome than a number ending up in a slightly wrong
+        // row: a wrong-looking value is obvious and easy to fix in the review screen, but an
+        // empty field looks identical whether OCR missed it or the learner actually scored 0.
+        // Every number ML Kit reads should end up visible SOMEWHERE.
         val numericByRow = HashMap<Int, MutableList<Triple<Int, Float, Boolean>>>()
         otherTokens.forEach { tok ->
             val numResult = extractNumericValue(tok.text.replace(stripCharsRegex, "")) ?: return@forEach
             val (value, corrected) = numResult
             var bestIdx = -1
-            var bestDy = Float.MAX_VALUE
+            var bestScore = Float.MAX_VALUE
             nameRows.forEachIndexed { idx, row ->
                 if (idx == headerIdx) return@forEachIndexed
                 val rowAvgX = row.items.map { it.cx }.average().toFloat()
                 val dx = (tok.cx - rowAvgX).coerceAtLeast(0f)
-                val allowance = baseAllowance + dx * TILT_SLACK_PER_PX
+                val expectedDrift = dx * TILT_SLACK_PER_PX // how much y-drift camera tilt alone could explain
                 val dy = abs(tok.cy - row.cy)
-                if (dy <= allowance && dy < bestDy) {
-                    bestDy = dy
+                val score = (dy - expectedDrift).coerceAtLeast(0f) // "excess" drift beyond what tilt explains
+                if (score < bestScore) {
+                    bestScore = score
                     bestIdx = idx
                 }
             }
@@ -118,12 +120,27 @@ object ClassListParser {
         nameRows.forEachIndexed { idx, row ->
             if (idx == headerIdx) return@forEachIndexed
             val name = row.items.joinToString(" ") { cleanNameWord(it.text) }.trim().uppercase()
-            val numericTokens = numericByRow[idx].orEmpty()
+            val numericTokens = numericByRow[idx].orEmpty().sortedBy { it.second }
 
             val scores = mutableMapOf<String, Int?>()
             val flagged = mutableSetOf<String>()
             val cMap = columnMap
-            if (cMap != null) {
+
+            if (cMap != null && numericTokens.size == cMap.size) {
+                // Counts line up with the header exactly — pair by left-to-right order rather
+                // than nearest-x-distance. This is far more reliable than distance matching when
+                // a column's header word isn't perfectly centered above its own data column
+                // (extremely common with handwritten, hand-ruled tables), which used to make two
+                // numbers both look "nearest" to the same column and silently lose one of them.
+                val sortedColumns = cMap.sortedBy { it.second }
+                numericTokens.forEachIndexed { i, (value, _, corrected) ->
+                    val fieldId = sortedColumns[i].first
+                    scores[fieldId] = value
+                    if (corrected) flagged.add(fieldId)
+                }
+            } else if (cMap != null) {
+                // Counts don't match (OCR likely missed or invented a digit token) — fall back
+                // to nearest-column matching per number, still never dropping a number outright.
                 for ((value, x, corrected) in numericTokens) {
                     val best = cMap.minByOrNull { abs(it.second - x) } ?: continue
                     if (!scores.containsKey(best.first)) {
@@ -132,7 +149,7 @@ object ClassListParser {
                     }
                 }
             } else {
-                numericTokens.sortedBy { it.second }.forEachIndexed { i, (value, _, corrected) ->
+                numericTokens.forEachIndexed { i, (value, _, corrected) ->
                     activeFieldIds.getOrNull(i)?.let { fieldId ->
                         scores[fieldId] = value
                         if (corrected) flagged.add(fieldId)
