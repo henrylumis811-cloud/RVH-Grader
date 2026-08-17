@@ -190,6 +190,18 @@ of by nearest on-screen distance — hand-ruled tables rarely have a header word
 above its own column, so distance matching could make two numbers both look "nearest" to the same
 subject and silently lose one of them.
 
+**Fixed a phantom row: the "Name" column header itself was being read as a learner.** Removing
+the rejection threshold above fixed dropped numbers, but exposed a different problem: the word
+"Name" (the header of the *name column*, separate from the subject-header row) doesn't match any
+subject alias, so nothing was excluding it — it became its own tiny "row" with no numbers of its
+own, and since every number now gets assigned to its single best-matching row, this phantom row
+would sometimes out-compete a real learner sitting right next to it for that learner's own scores,
+leaving the real learner empty. Two fixes: adjacent row-clusters that sit much closer together
+than the sheet's typical row spacing now get merged (most such fragments turn out to just be the
+name-column header sitting a hair off from the subject headers next to it), and as a backstop, a
+row made up of only a recognized non-data label ("Name", "Learner", "Student", ...) is excluded
+outright, the same way the subject-header row already was.
+
 Handwriting varies a lot school to school — if the row-clustering or digit corrections need
 tuning against real samples from your school, send me a couple of photos (or just describe what
 it's getting wrong) and I'll adjust `ClassListParser.kt`.

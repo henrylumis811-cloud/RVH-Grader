@@ -49,6 +49,12 @@ object ClassListParser {
     private val aliasCleanupRegex = Regex("[^A-Z. ]")
     private val digitRunRegex = Regex("\\d{1,3}")
 
+    // Column-header labels that aren't a subject and aren't a learner — if a row is made up of
+    // just one of these, it's the "Name" column header, not a phantom extra learner.
+    private val nonDataLabels = setOf(
+        "NAME", "NAMES", "LEARNER", "LEARNERS", "STUDENT", "STUDENTS", "PUPIL", "PUPILS", "SN"
+    )
+
     // How much extra vertical slack (as a fraction of horizontal distance from the name) to
     // allow when matching a number to a name-row. 0.35 means: for every 100px a number sits to
     // the right of the name it belongs to, allow up to 35px of extra vertical drift before
@@ -69,21 +75,26 @@ object ClassListParser {
             return extractRowsFallback(tokens, activeFieldIds)
         }
 
-        val nameRows = clusterIntoRows(nameLikeTokens, toleranceMultiplier = 0.85f)
+        val nameRows = mergeFragmentedRows(clusterIntoRows(nameLikeTokens, toleranceMultiplier = 0.85f))
 
-        // The header row (ENG, MTC, ...) is made of letters too, so it naturally becomes one of
-        // the "name rows" above — find and exclude it, and use its words to anchor column
-        // x-positions for score matching.
-        var headerIdx = -1
+        // Two kinds of rows need excluding from "these are learners": the subject-header row
+        // (ENG, MTC, ...) — made of letters too, so it naturally becomes one of the name-rows
+        // above — and the NAME COLUMN's own header ("Name", "Learner", ...), which used to get
+        // treated as a phantom extra learner with no numbers of its own, and would then steal
+        // nearby numbers away from a real learner's row right next to it.
+        val excludedRowIndices = mutableSetOf<Int>()
         var columnMap: List<Pair<String, Float>>? = null
         nameRows.forEachIndexed { idx, row ->
-            if (columnMap != null) return@forEachIndexed
             val matches = row.items.mapNotNull { tok ->
                 matchSubjectAlias(tok.text, activeFieldIds)?.let { it to tok.cx }
             }
-            if (matches.size >= 2) {
+            if (matches.size >= 2 && columnMap == null) {
                 columnMap = matches
-                headerIdx = idx
+                excludedRowIndices.add(idx)
+            }
+            val combinedLetters = row.items.joinToString("") { it.text.uppercase().filter { c -> c.isLetter() } }
+            if (row.items.size <= 2 && combinedLetters in nonDataLabels) {
+                excludedRowIndices.add(idx)
             }
         }
 
@@ -100,7 +111,7 @@ object ClassListParser {
             var bestIdx = -1
             var bestScore = Float.MAX_VALUE
             nameRows.forEachIndexed { idx, row ->
-                if (idx == headerIdx) return@forEachIndexed
+                if (idx in excludedRowIndices) return@forEachIndexed
                 val rowAvgX = row.items.map { it.cx }.average().toFloat()
                 val dx = (tok.cx - rowAvgX).coerceAtLeast(0f)
                 val expectedDrift = dx * TILT_SLACK_PER_PX // how much y-drift camera tilt alone could explain
@@ -118,7 +129,7 @@ object ClassListParser {
 
         val results = mutableListOf<ExtractedRow>()
         nameRows.forEachIndexed { idx, row ->
-            if (idx == headerIdx) return@forEachIndexed
+            if (idx in excludedRowIndices) return@forEachIndexed
             val name = row.items.joinToString(" ") { cleanNameWord(it.text) }.trim().uppercase()
             val numericTokens = numericByRow[idx].orEmpty().sortedBy { it.second }
 
@@ -221,6 +232,35 @@ object ClassListParser {
         }
         rows.forEach { row -> row.items.sortBy { it.cx } }
         return rows.sortedBy { it.cy }
+    }
+
+    /**
+     * Real table rows tend to be roughly evenly spaced. If two adjacent row-clusters sit much
+     * closer together than that typical spacing, they're far more likely to be two fragments of
+     * the same physical row (e.g. a column-header label like "Name" that landed a hair off from
+     * the subject headers next to it) than genuinely separate learners — merge them.
+     */
+    private fun mergeFragmentedRows(rows: List<RowCluster>): List<RowCluster> {
+        if (rows.size < 3) return rows
+        val gaps = (1 until rows.size).map { rows[it].cy - rows[it - 1].cy }.sorted()
+        val medianGap = gaps[gaps.size / 2]
+        if (medianGap <= 0f) return rows
+
+        val merged = mutableListOf<RowCluster>()
+        var current = rows[0]
+        for (i in 1 until rows.size) {
+            val gap = rows[i].cy - current.cy
+            if (gap < medianGap * 0.45f) {
+                current.items.addAll(rows[i].items)
+                current.items.sortBy { it.cx }
+                current.cy = current.items.map { it.cy }.average().toFloat()
+            } else {
+                merged.add(current)
+                current = rows[i]
+            }
+        }
+        merged.add(current)
+        return merged
     }
 
     private fun matchSubjectAlias(token: String, activeFieldIds: List<String>): String? {
