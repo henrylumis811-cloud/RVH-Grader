@@ -127,12 +127,16 @@ app/src/main/java/com/henrylumis/rvhgrader/
 │   ├── ImageUtils.kt              # EXIF-aware image loading (keeps photos upright for OCR)
 │   ├── ClassListParser.kt         # Row/column clustering — splits a class-list photo into per-learner rows
 │   └── PendingRow.kt              # Editable row state for the Review & Correct screen
+├── ai/
+│   ├── ClaudeVisionOcr.kt         # Optional: sends the photo to Claude's vision API instead
+│   └── VisionSettingsRepository.kt  # Persists the AI Vision on/off toggle, API key, model name
 └── ui/
     ├── Screen.kt                  # Drawer destinations
     ├── PinGate.kt                 # Local PIN screen (stylish dedication header)
     ├── Dashboard.kt               # Class/term dropdowns, scanner, review panel, form, standings
     ├── HistoryScreen.kt           # Every learner's records across classes/terms
     ├── SettingsScreen.kt          # Editable grading scale
+    ├── VisionSettingsScreen.kt    # AI Vision OCR opt-in settings
     ├── BackupScreen.kt            # Backup/restore UI
     ├── ExportFormatDialog.kt      # Shared PDF/Excel/CSV picker
     └── Theme.kt                   # Light/dark color schemes
@@ -205,6 +209,45 @@ outright, the same way the subject-header row already was.
 Handwriting varies a lot school to school — if the row-clustering or digit corrections need
 tuning against real samples from your school, send me a couple of photos (or just describe what
 it's getting wrong) and I'll adjust `ClassListParser.kt`.
+
+## AI Vision OCR — an optional, much more reliable alternative
+After several rounds of tuning the geometric row-reconstruction above against real class-list
+photos, it became clear that approach has a hard ceiling: it's reconstructing table structure
+from a pile of individual word bounding boxes, never actually "understanding" the table the way a
+person (or a vision-capable AI model) does. So there's now a second, opt-in scanning path: **AI
+Vision OCR**, in the drawer menu, which sends the photo to Claude's vision API instead of running
+it through ML Kit + `ClassListParser`. A model that can actually look at the whole image and
+reason about its layout reads messy handwriting dramatically better than any geometry-based
+approach can — at the cost of needing an internet connection and your own Anthropic API key
+(get one at console.anthropic.com), plus a small per-scan cost, typically a few cents.
+
+**It's off by default and entirely optional.** Leave it off and the app behaves exactly as
+before — free, fully offline, on-device OCR. Turn it on in Settings > AI Vision OCR (enter your
+key, hit Save) and every subsequent photo scan uses it instead; turn it back off any time to
+return to the offline path. Both paths feed the exact same Review & Correct screen, so nothing
+else about the workflow changes either way.
+
+**What actually happens on a scan**: the photo is downscaled and JPEG-compressed, sent to
+`https://api.anthropic.com/v1/messages` with a prompt asking the model to read every row of the
+table and return strict JSON (`ai/ClaudeVisionOcr.kt`), which gets parsed straight into the same
+`ExtractedRow` shape the offline parser produces. No new library dependency was needed — the
+request is a plain `HttpURLConnection` call and the JSON parsing uses `org.json`, both already
+part of the Android SDK.
+
+**On your API key**: it's stored in this app's private SharedPreferences (not encrypted at rest,
+but inaccessible to other apps without root), sent only directly to Anthropic's API alongside each
+scan, and deliberately left out of Backup & Restore files — a backup you export and hand to
+someone else (or restore on a different phone) won't leak it. If you want it encrypted at rest,
+swapping `VisionSettingsRepository`'s plain `SharedPreferences` for
+`androidx.security:security-crypto`'s `EncryptedSharedPreferences` is a small, self-contained
+change.
+
+**On the model name**: `VisionSettingsRepository.DEFAULT_MODEL` is currently set to
+`claude-sonnet-4-5-20250929`, a real, stable Anthropic API model identifier as of when this was
+built — but model names change over time, and the Settings screen's Model field is editable, so
+you (or a future me) can point it at whatever's current without touching code. Check
+docs.claude.com for the latest available vision-capable models if scans start failing with a
+"model not found"-style error.
 
 ## Pushing to GitHub & building via CI
 ```bash

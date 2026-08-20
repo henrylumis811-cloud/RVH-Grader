@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Only used when a teacher explicitly opts into AI Vision OCR (Settings > AI Vision OCR).
+         The default on-device OCR path needs no network access at all — see the package
+         visibility comment below. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
 
     <!-- Android 11+ package visibility: lets us confirm a camera app exists before
-         launching the capture intent, without requesting internet/network access
-         (this app performs OCR fully on-device and never needs a network permission). -->
+         launching the capture intent. The default on-device OCR path performs the actual scan
+         fully offline; INTERNET above is only exercised if AI Vision OCR is turned on. -->
     <queries>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />

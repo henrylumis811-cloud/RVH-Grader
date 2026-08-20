@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
@@ -20,6 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.henrylumis.rvhgrader.ai.ClaudeVisionOcr
+import com.henrylumis.rvhgrader.ai.VisionOcrException
+import com.henrylumis.rvhgrader.ai.VisionSettingsRepository
 import com.henrylumis.rvhgrader.data.GradebookRepository
 import com.henrylumis.rvhgrader.export.ExportFormat
 import com.henrylumis.rvhgrader.export.ExportManager
@@ -39,6 +43,7 @@ import com.henrylumis.rvhgrader.ui.HistoryScreen
 import com.henrylumis.rvhgrader.ui.PinGate
 import com.henrylumis.rvhgrader.ui.Screen
 import com.henrylumis.rvhgrader.ui.SettingsScreen
+import com.henrylumis.rvhgrader.ui.VisionSettingsScreen
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -70,6 +75,7 @@ fun RVHGraderApp() {
     // ---- Persisted state: loaded once on unlock, auto-saved after every change ----
     val allRecords = remember { mutableStateListOf<StudentRecord>().apply { addAll(GradebookRepository.load(context)) } }
     var gradingScale by remember { mutableStateOf(GradingScaleRepository.load(context)) }
+    var visionSettings by remember { mutableStateOf(VisionSettingsRepository.load(context)) }
 
     fun persistRecords() = GradebookRepository.save(context, allRecords)
     fun persistScale() = GradingScaleRepository.save(context, gradingScale)
@@ -116,8 +122,19 @@ fun RVHGraderApp() {
             try {
                 val bitmap = loadUprightBitmap(context, uri)
                 lastCapturedImage = bitmap
-                val visionText = recognizeText(bitmap)
-                val extractedRows = ClassListParser.extractRows(visionText, selectedClass.mode)
+
+                val extractedRows = if (visionSettings.enabled) {
+                    scanStatus = "READING WITH AI VISION..."
+                    ClaudeVisionOcr.extractRows(
+                        apiKey = visionSettings.apiKey,
+                        model = visionSettings.model,
+                        bitmap = bitmap,
+                        mode = selectedClass.mode
+                    )
+                } else {
+                    val visionText = recognizeText(bitmap)
+                    ClassListParser.extractRows(visionText, selectedClass.mode)
+                }
 
                 extractedRows.forEach { row ->
                     pendingRows.add(
@@ -137,6 +154,8 @@ fun RVHGraderApp() {
                     "NO ROWS DETECTED - ENTER MANUALLY"
                 }
                 reviewing = extractedRows.isNotEmpty()
+            } catch (e: VisionOcrException) {
+                scanStatus = "AI VISION FAILED: ${e.message} — check Settings, or turn it off to use offline OCR."
             } catch (e: Exception) {
                 scanStatus = "SCAN FAILED - ENTER DATA MANUALLY"
             } finally {
@@ -224,6 +243,13 @@ fun RVHGraderApp() {
                     modifier = Modifier.padding(horizontal = 12.dp)
                 )
                 NavigationDrawerItem(
+                    label = { Text(Screen.VISION.label) },
+                    selected = currentScreen == Screen.VISION,
+                    icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                    onClick = { goTo(Screen.VISION) },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                NavigationDrawerItem(
                     label = { Text(Screen.BACKUP.label) },
                     selected = currentScreen == Screen.BACKUP,
                     icon = { Icon(Icons.Filled.Backup, contentDescription = null) },
@@ -295,6 +321,15 @@ fun RVHGraderApp() {
                 onScaleChange = { newScale ->
                     gradingScale = newScale
                     persistScale()
+                },
+                onOpenMenu = { openMenu() }
+            )
+
+            Screen.VISION -> VisionSettingsScreen(
+                settings = visionSettings,
+                onSettingsChange = { newSettings ->
+                    visionSettings = newSettings
+                    VisionSettingsRepository.save(context, newSettings)
                 },
                 onOpenMenu = { openMenu() }
             )
